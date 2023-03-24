@@ -33,29 +33,13 @@ func main() {
 		log.Fatalf("unable to determine current user: %s", err)
 	}
 
-	// get the user's current or login shell
-	sh, err := Getsh(u, "/bin/bash")
-	if err != nil {
-		log.Printf("unable to get login shell, using default (%s): %s", sh, err)
-	}
-
-	// create shell command.
-	// TODO: what flags?
-	cmd := exec.Command(sh, "-i", "-l")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
-	// TODO: users will hate us taking over their prompt
-	cmd.Env = append(cmd.Env, `PS1=[htshell:\w]\$ `)
-
 	// create temporary token file
 	tok, err := os.CreateTemp("", fmt.Sprintf("bt_u%s_", u.Uid))
 	if err != nil {
 		log.Fatalf("unable to create token file (%s): %s", tok.Name(), err)
 	}
 	defer os.Remove(tok.Name()) // delete it when we leave
-	cmd.Env = append(cmd.Env, fmt.Sprintf("BEARER_TOKEN_FILE=%s", tok.Name()))
+	os.Setenv("BEARER_TOKEN_FILE", tok.Name())
 
 	// get initial token
 	// TODO: maybe we should do token discovery first?
@@ -83,6 +67,22 @@ func main() {
 			}
 		}
 	}(ctx)
+
+	// get the user's current or login shell
+	sh, err := Getsh(u, "/bin/bash")
+	if err != nil {
+		log.Printf("unable to get login shell, using default (%s): %s", sh, err)
+	}
+
+	// create shell command.
+	// TODO: what flags?
+	cmd := exec.Command(sh, "-i", "-l")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	// TODO: users will hate us taking over their prompt
+	cmd.Env = append(cmd.Env, `PS1=[htshell:\w]\$ `)
 
 	// run shell
 	if err := cmd.Start(); err != nil {
@@ -120,8 +120,6 @@ func Getsh(u *user.User, fallback string) (string, error) {
 // Refresh refreshes the bearer token in file f.
 func Refresh(f string, interactive bool) error {
 	cmd := exec.Command("htgettoken", os.Args[1:]...)
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, fmt.Sprintf("BEARER_TOKEN_FILE=%s", f))
 	if interactive {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
