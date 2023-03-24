@@ -59,7 +59,9 @@ func main() {
 
 	// get initial token
 	// TODO: maybe we should do token discovery first?
-	Refresh(tok.Name(), true)
+	if Refresh(tok.Name(), true) != nil {
+		log.Fatalf("unable to get initial token: %s", err)
+	}
 
 	// start refresher in goroutine
 	log.Printf("refreshing token (%s) every %s", tok.Name(), RefreshInterval.String())
