@@ -45,6 +45,7 @@ func main() {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
 	// TODO: users will hate us taking over their prompt
 	cmd.Env = append(cmd.Env, `PS1=[htshell:\w]\$ `)
 
@@ -119,6 +120,7 @@ func Getsh(u *user.User, fallback string) (string, error) {
 // Refresh refreshes the bearer token in file f.
 func Refresh(f string, interactive bool) error {
 	cmd := exec.Command("htgettoken", os.Args[1:]...)
+	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, fmt.Sprintf("BEARER_TOKEN_FILE=%s", f))
 	if interactive {
 		cmd.Stdin = os.Stdin
