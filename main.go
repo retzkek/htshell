@@ -13,35 +13,47 @@ import (
 )
 
 var (
-	RefreshInterval = 10 * time.Second
+	// TODO: configure this?
+	RefreshInterval = 10 * time.Minute
 )
 
 func main() {
+	// get user info
 	u, err := user.Current()
 	if err != nil {
 		log.Fatalf("unable to determine current user: %s", err)
 	}
 
+	// get the user's login shell
+	// TODO: or do we just look at the SHELL env var?
 	sh, err := Getsh(u, "/bin/bash")
 	if err != nil {
 		log.Printf("unable to get login shell, using default (%s): %s", sh, err)
 	}
 
+	// create shell command.
+	// TODO: what flags?
 	cmd := exec.Command(sh, "-i", "-l")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// TODO: users will hate us taking over their prompt
+	cmd.Env = append(cmd.Env, `PS1=[htshell:\w]\$`)
 
+	// create temporary token file
 	tok, err := os.CreateTemp("", fmt.Sprintf("bt_u%s", u.Uid))
 	if err != nil {
 		log.Fatalf("unable to create token file (%s): %s", tok.Name(), err)
 	}
-	defer os.Remove(tok.Name())
+	defer os.Remove(tok.Name()) // delete it when we leave
+	cmd.Env = append(cmd.Env, fmt.Sprintf("BEARER_TOKEN_FILE=%s", tok.Name()))
 
+	// get initial token
+	// TODO: maybe we should do token discovery first?
 	Refresh(tok.Name(), true)
 
+	// start refresher in goroutine
 	log.Printf("refreshing token (%s) every %s", tok.Name(), RefreshInterval.String())
-
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 	wg.Add(1)
@@ -52,6 +64,7 @@ func main() {
 			case <-time.After(RefreshInterval):
 				err := Refresh(tok.Name(), false)
 				if err != nil {
+					// TODO log the output somewhere?
 					log.Printf("error refreshing token: %s", err)
 				}
 			case <-ctx.Done():
@@ -61,12 +74,13 @@ func main() {
 		wg.Done()
 	}(ctx)
 
-	cmd.Env = append(cmd.Env, fmt.Sprintf("BEARER_TOKEN_FILE=%s", tok.Name()))
-
+	// run shell
 	if err := cmd.Start(); err != nil {
 		panic(err)
 	}
 	cmd.Wait()
+
+	// clean up
 	cancel()
 	log.Println("waiting for token refresher to exit...")
 	wg.Wait()
