@@ -1,3 +1,3 @@
-module github.com/fermitools/htshell
+module github.com/retzkek/htshell
 
 go 1.19
