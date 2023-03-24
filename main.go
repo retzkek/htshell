@@ -33,8 +33,7 @@ func main() {
 		log.Fatalf("unable to determine current user: %s", err)
 	}
 
-	// get the user's login shell
-	// TODO: or do we just look at the SHELL env var?
+	// get the user's current or login shell
 	sh, err := Getsh(u, "/bin/bash")
 	if err != nil {
 		log.Printf("unable to get login shell, using default (%s): %s", sh, err)
@@ -96,8 +95,12 @@ func main() {
 	wg.Wait()
 }
 
-// Getsh returns the user's login shell, or fallback if there's an error.
+// Getsh returns the user's current shell (from SHELL), or login shell (from
+// passwd), or fallback if there's an error.
 func Getsh(u *user.User, fallback string) (string, error) {
+	if sh, ok := os.LookupEnv("SHELL"); ok {
+		return sh, nil
+	}
 
 	out, err := exec.Command("getent", "passwd", u.Username).Output()
 	if err != nil {
