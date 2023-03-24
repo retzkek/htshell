@@ -50,7 +50,7 @@ func main() {
 	cmd.Env = append(cmd.Env, `PS1=[htshell:\w]\$ `)
 
 	// create temporary token file
-	tok, err := os.CreateTemp("", fmt.Sprintf("bt_u%s", u.Uid))
+	tok, err := os.CreateTemp("", fmt.Sprintf("bt_u%s_", u.Uid))
 	if err != nil {
 		log.Fatalf("unable to create token file (%s): %s", tok.Name(), err)
 	}
@@ -69,7 +69,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	wg.Add(1)
 	go func(ctx context.Context) {
-	refresh:
+		defer wg.Done()
 		for {
 			select {
 			case <-time.After(RefreshInterval):
@@ -79,10 +79,9 @@ func main() {
 					log.Printf("error refreshing token: %s", err)
 				}
 			case <-ctx.Done():
-				break refresh
+				return
 			}
 		}
-		wg.Done()
 	}(ctx)
 
 	// run shell
