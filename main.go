@@ -8,16 +8,20 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"path"
 	"strings"
 	"sync"
 	"time"
 )
 
-// options
 var (
+	// how often to refresh token
 	RefreshInterval = 10 * time.Minute
-	LogAtPrompt     = false
+	// whether to set BEARER_TOKEN with contents of BEARER_TOKEN_FILE
+	ExportBearerToken = true
+	// if true, the refresher log is displayed and truncated before each shell prompt
+	LogAtPrompt = false
+	// prefix displayed on each log line and the prompt
+	LogPrefix = "[htshell] "
 )
 
 func init() {
@@ -28,24 +32,27 @@ func init() {
 			panic(err)
 		}
 	}
-	if r, ok := os.LookupEnv("HTSHELL_LOG_AT_PROMPT"); ok {
-		switch strings.ToLower(r) {
-		case "no", "false", "0":
-			LogAtPrompt = false
-		default:
-			LogAtPrompt = true
-		}
+
+	if r, ok := os.LookupEnv("HTSHELL_EXPORT_BEARER_TOKEN"); ok {
+		ExportBearerToken = boolish(r)
 	}
+
+	if r, ok := os.LookupEnv("HTSHELL_LOG_AT_PROMPT"); ok {
+		LogAtPrompt = boolish(r)
+	}
+
+	if r, ok := os.LookupEnv("HTSHELL_PREFIX"); ok {
+		LogPrefix = r
+	}
+	log.SetPrefix(LogPrefix)
 }
 
-// logging
-var (
-	LogPrefix = "[htshell] "
-)
-
-func init() {
-	LogPrefix = fmt.Sprintf("[%s] ", path.Base(os.Args[0]))
-	log.SetPrefix(LogPrefix)
+func boolish(s string) bool {
+	switch strings.ToLower(s) {
+	case "no", "false", "0":
+		return false
+	}
+	return true
 }
 
 func main() {
@@ -62,6 +69,10 @@ func main() {
 	}
 	defer os.Remove(tok.Name()) // delete it when we leave
 	os.Setenv("BEARER_TOKEN_FILE", tok.Name())
+	if ExportBearerToken {
+		os.Setenv("PROMPT_COMMAND", fmt.Sprintf("export BEARER_TOKEN=$(cat %s);%s",
+			tok.Name(), os.Getenv("PROMPT_COMMAND")))
+	}
 
 	// init Refresher
 	rlog, err := os.Create(fmt.Sprintf("%s.log", tok.Name()))
@@ -101,15 +112,14 @@ func main() {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
-	// TODO: users will hate us taking over their prompt
-	// TODO: inject BEARER_TOKEN into env via PSx or PROMPT_COMMAND?
-	cmd.Env = append(cmd.Env, fmt.Sprintf(`PS1=%s[\u@\h \W]\$ `, LogPrefix))
+	cmd.Env = append(cmd.Env, fmt.Sprintf(`PS1=%s%s`, LogPrefix, os.Getenv("PS1")))
 	if LogAtPrompt {
 		// show new log entries at prompt
 		// TODO: what if the shell isn't bash?
 		// TODO: maybe better as a function?
 		// TODO: probably better ways to pass messages from the refresher to the user
-		cmd.Env = append(cmd.Env, fmt.Sprintf(`PROMPT_COMMAND=cat %s && truncate -s0 %s`, rlog.Name(), rlog.Name()))
+		cmd.Env = append(cmd.Env, fmt.Sprintf(`PROMPT_COMMAND=cat %s && truncate -s0 %s;%s`,
+			rlog.Name(), rlog.Name(), os.Getenv("PROMPT_COMMAND")))
 	} else {
 		log.Printf("refresher and htgettoken logs in %s", rlog.Name())
 	}
