@@ -13,9 +13,18 @@ import (
 )
 
 var (
-	// TODO: configure this?
 	RefreshInterval = 10 * time.Minute
 )
+
+func init() {
+	var err error
+	if r, ok := os.LookupEnv("HTSHELL_REFRESH_INTERVAL"); ok {
+		RefreshInterval, err = time.ParseDuration(r)
+		if err != nil {
+			panic(err)
+		}
+	}
+}
 
 func main() {
 	// get user info
@@ -38,7 +47,7 @@ func main() {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// TODO: users will hate us taking over their prompt
-	cmd.Env = append(cmd.Env, `PS1=[htshell:\w]\$`)
+	cmd.Env = append(cmd.Env, `PS1=[htshell:\w]\$ `)
 
 	// create temporary token file
 	tok, err := os.CreateTemp("", fmt.Sprintf("bt_u%s", u.Uid))
