@@ -8,12 +8,16 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path"
+	"strings"
 	"sync"
 	"time"
 )
 
+// options
 var (
 	RefreshInterval = 10 * time.Minute
+	LogAtPrompt     = false
 )
 
 func init() {
@@ -24,6 +28,24 @@ func init() {
 			panic(err)
 		}
 	}
+	if r, ok := os.LookupEnv("HTSHELL_LOG_AT_PROMPT"); ok {
+		switch strings.ToLower(r) {
+		case "no", "false", "0":
+			LogAtPrompt = false
+		default:
+			LogAtPrompt = true
+		}
+	}
+}
+
+// logging
+var (
+	LogPrefix = "[htshell] "
+)
+
+func init() {
+	LogPrefix = fmt.Sprintf("[%s] ", path.Base(os.Args[0]))
+	log.SetPrefix(LogPrefix)
 }
 
 func main() {
@@ -36,37 +58,35 @@ func main() {
 	// create temporary token file
 	tok, err := os.CreateTemp("", fmt.Sprintf("bt_u%s_", u.Uid))
 	if err != nil {
-		log.Fatalf("unable to create token file (%s): %s", tok.Name(), err)
+		log.Fatalf("unable to create token file: %s", err)
 	}
 	defer os.Remove(tok.Name()) // delete it when we leave
 	os.Setenv("BEARER_TOKEN_FILE", tok.Name())
 
+	// init Refresher
+	rlog, err := os.Create(fmt.Sprintf("%s.log", tok.Name()))
+	if err != nil {
+		log.Fatalf("unable to create refresher log file: %s", err)
+	}
+	defer os.Remove(rlog.Name()) // delete it when we leave
+	r := Refresher{
+		TokenFile: tok.Name(),
+		Log:       log.New(rlog, LogPrefix, log.Ldate|log.Ltime),
+	}
+	if err != nil {
+		log.Fatalf("unable to create refresher: %s", err)
+	}
+
 	// get initial token
 	// TODO: maybe we should do token discovery first?
-	if Refresh(tok.Name(), true) != nil {
+	if err := r.Refresh(true); err != nil {
 		log.Fatalf("unable to get initial token: %s", err)
 	}
 
-	// start refresher in goroutine
-	log.Printf("refreshing token (%s) every %s", tok.Name(), RefreshInterval.String())
-	var wg sync.WaitGroup
-	ctx, cancel := context.WithCancel(context.Background())
-	wg.Add(1)
-	go func(ctx context.Context) {
-		defer wg.Done()
-		for {
-			select {
-			case <-time.After(RefreshInterval):
-				err := Refresh(tok.Name(), false)
-				if err != nil {
-					// TODO log the output somewhere?
-					log.Printf("error refreshing token: %s", err)
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}(ctx)
+	if err := r.Start(RefreshInterval); err != nil {
+		log.Fatalf("unable to start refresher: %s", err)
+	}
+	defer r.Stop()
 
 	// get the user's current or login shell
 	sh, err := Getsh(u, "/bin/bash")
@@ -76,24 +96,29 @@ func main() {
 
 	// create shell command.
 	// TODO: what flags?
-	cmd := exec.Command(sh, "-i", "-l")
+	cmd := exec.Command(sh)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
 	// TODO: users will hate us taking over their prompt
-	cmd.Env = append(cmd.Env, `PS1=[htshell:\w]\$ `)
+	// TODO: inject BEARER_TOKEN into env via PSx or PROMPT_COMMAND?
+	cmd.Env = append(cmd.Env, fmt.Sprintf(`PS1=%s[\u@\h \W]\$ `, LogPrefix))
+	if LogAtPrompt {
+		// show new log entries at prompt
+		// TODO: what if the shell isn't bash?
+		// TODO: maybe better as a function?
+		// TODO: probably better ways to pass messages from the refresher to the user
+		cmd.Env = append(cmd.Env, fmt.Sprintf(`PROMPT_COMMAND=cat %s && truncate -s0 %s`, rlog.Name(), rlog.Name()))
+	} else {
+		log.Printf("refresher and htgettoken logs in %s", rlog.Name())
+	}
 
 	// run shell
 	if err := cmd.Start(); err != nil {
 		panic(err)
 	}
 	cmd.Wait()
-
-	// clean up
-	cancel()
-	log.Println("waiting for token refresher to exit...")
-	wg.Wait()
 }
 
 // Getsh returns the user's current shell (from SHELL), or login shell (from
@@ -117,13 +142,60 @@ func Getsh(u *user.User, fallback string) (string, error) {
 	return string(out[loc+1 : len(out)-1]), nil
 }
 
-// Refresh refreshes the bearer token in file f.
-func Refresh(f string, interactive bool) error {
+// Refresher manages refreshing a bearer token.
+type Refresher struct {
+	TokenFile string
+	Log       *log.Logger
+	wg        sync.WaitGroup
+	cancel    context.CancelFunc
+}
+
+// Start a refresher goroutine.
+func (r *Refresher) Start(interval time.Duration) error {
+	if r.Log != nil {
+		r.Log.Printf("refreshing token (%s) every %s", r.TokenFile, interval)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancel = cancel
+	r.wg.Add(1)
+	go func(ctx context.Context) {
+		defer r.wg.Done()
+		for {
+			select {
+			case <-time.After(interval):
+				err := r.Refresh(false)
+				if err != nil && r.Log != nil {
+					r.Log.Printf("error refreshing token: %s", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}(ctx)
+	return nil
+}
+
+// Stop the refresher goroutine.
+func (r *Refresher) Stop() {
+	log.Println("stopping the token refresher...")
+	r.cancel()
+	r.wg.Wait()
+}
+
+// Refresh the bearer token. If interactive is true it pipes input and
+// output to the parent shell, otherwise logs output to its own log file.
+func (r *Refresher) Refresh(interactive bool) error {
+	if r.Log != nil {
+		r.Log.Printf("refeshing bearer token (%s)", r.TokenFile)
+	}
 	cmd := exec.Command("htgettoken", os.Args[1:]...)
 	if interactive {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+	} else if r.Log != nil {
+		cmd.Stdout = r.Log.Writer()
+		cmd.Stderr = r.Log.Writer()
 	}
 	return cmd.Run()
 }
